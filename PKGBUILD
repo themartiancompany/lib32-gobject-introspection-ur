@@ -27,8 +27,37 @@
 # Contributor: Jan Alexander Steffens (heftig) <heftig@archlinux.org>
 # Contributor: Jan de Groot <jgc@archlinux.org>
 
+_os="$( \
+  uname \
+    -o)"
+if [[ "${_os}" == "GNU/Linux" ]]; then
+  _libc="glibc"
+elif [[ "${_os}" == "Android" ]]; then
+  _libc="ndk-sysroot"
+fi
+# I'm not sure if it's needed
+# this days but it seems looked for
+_bison="true"
+_docs="false"
+_tests="false"
 _ml="lib32-"
 _py="python"
+_pyver_autodetect="false"
+_pymajver=3.13
+_py_found="$( \
+  command \
+    -v \
+    "${_py}${_pymajver}-32")"
+if [[ "${_py_found}" == "" ]]; then
+  _pymajver_autodetect="true"
+fi
+if [[ "${_pymajver_autodetect}" == "true" ]]; then
+  _pyver="$( \
+    "${_py}-32" \
+      -V | \
+      awk '{print $2}')"
+  _pymajver="${_pyver%.*}"
+fi
 _proj="gnome"
 _pkg=gobject-introspection
 pkgbase="${_ml}${_pkg}"
@@ -36,9 +65,10 @@ _pkgbase=gobject-introspection
 pkgname=(
   "${pkgbase}"
   "${pkgbase}-runtime"
+  "${_ml}libgirepository"
 )
 pkgver=1.82.0
-_commit="4a365a3137afd51cfaaa39f7784ecb822978e85f"
+_commit="e30c00acab2d7216e742d602988c935f787755d4"
 pkgrel=2
 pkgdesc="Introspection system for GObject-based libraries (32-bit)"
 url="https://wiki.${_proj}.org/Projects/GObjectIntrospection"
@@ -50,22 +80,33 @@ license=(
   "GPL"
 )
 _glib_ver="2.82.4"
-_glib_commit="e35c796e62eddc827112e692defc0a164042b0ef"
-_pyver=3.11
-depends=(
-  "${_py}-mako"
-  "${_py}-markdown"
-  "lib32-${_py}>=${_pyver}"
-)
+_glib_commit="ca20e4ac71864f08e980dc044ac96c06d5482b37"
 makedepends=(
-  "bison"
   "${_ml}cairo"
-  "git"
-  "gtk-doc"
+  "${_ml}${_libc}"
+  "${_bl}libffi"
+  "${_py}"
+  "${_py}-markdown"
+  "${_py}-setuptools"
   "${_py}-sphinx"
   "meson"
   "${_ml}glib2=${_glib_ver}"
 )
+if [[ "${_bison}" == "true" ]]; then
+  makedepends+=(
+    "bison"
+  )
+fi
+if [[ "${_docs}" == "true" ]]; then
+  makedepends+=(
+    "gtk-doc"
+  )
+fi
+if [[ "${_git}" == "true" ]]; then
+  makedepends+=(
+    "git"
+  )
+fi
 _http="https://gitlab.${_proj}.org"
 _ns="GNOME"
 _url="${_http}/${_ns}/${_pkg}"
@@ -74,10 +115,13 @@ _tag="${_commit}"
 source=(
   "git+${_url}.git#${_tag_name}=${_tag}"
   "git+${_http}/${_ns}/glib.git#${_tag_name}=${_glib_commit}"
-  "x86-linux-gnu")
+  '0001-scanner-Ignore-_Complex.patch'
+  "x86-linux-gnu"
+)
 sha512sums=(
   'SKIP'
   'SKIP'
+  'a2d754b1d259134a9c2ce061f4b1f6174b65cef94d703ba59d601ed8a3af9014ce20307c74a8265fa4a4427178483af137391bcb5d9052a0339ff9b2f18e46d0'
   '0be6a1cb2b7d82b25aabdcb7893e67d003d132471055d5853f5b3139c6665b3a1d6b65c63b46388b4af9c2fa0b2200791fb2f727c066e3a89d2c44be569104ad'
 )
 validpgpkeys=(
@@ -86,6 +130,7 @@ validpgpkeys=(
   # Marco Trevisan <marco@trevi.me>
   'D4C501DA48EB797A081750939449C2F50996635F'
 ) 
+
 pkgver() {
   cd \
     "${_pkg}"
@@ -94,6 +139,33 @@ pkgver() {
       --tags | \
     sed \
       's/[^-]*-g/r&/;s/-/+/g'
+}
+
+prepare() {
+  cd \
+    "${_pkg}"
+  # Unbreak WebKitGTK build
+  # https://gitlab.gnome.org/GNOME/gobject-introspection/-/issues/519
+  git \
+    apply \
+      -3 \
+      "../0001-scanner-Ignore-_Complex.patch"
+  if [[ "${_tests}" == "true" ]]; then
+    git \
+      submodule \
+        init
+    git \
+      submodule \
+        set-url \
+	  "${_pkg}-tests" \
+	  "$srcdir/${_pkg}-tests"
+    git \
+      -c \
+        protocol.file.allow="always" \
+      -c protocol.allow="never" \
+      submodule \
+        update
+  fi
 }
 
 build() {
@@ -110,17 +182,18 @@ build() {
     -D
       gir_dir_prefix="lib32/gobject-introspection/share"
     -D
-      gtk_doc="false"
+      gtk_doc="${_docs}"
     -D
-      python="python${_pyver}-32"
+      python="python${_pymajver}-32"
     -D
       glib_src_dir="${srcdir}/glib"
     --cross-file="x86-linux-gnu"
   )
   export \
     CC="gcc -m32" \
-    CXX="g++ -m32"
-  "/usr/bin/meson" \
+    CXX="g++ -m32" \
+    CFLAGS+=" -Wno-incompatible-pointer-types"
+  meson \
     setup \
       "${_pkg}" \
       "build" \
@@ -129,38 +202,62 @@ build() {
     -i \
       's/env python3$/env python3-32/' \
       "build/tools/g-ir-"{"scanner","doc-tool","annotation-tool"}
-  "/usr/bin/meson" \
+  meson \
     compile \
       -C \
         "build"
 }
 
 check() {
-  "/usr/bin/meson" \
+  meson \
     test \
       -C \
-        "build"
+        "build" \
+      --print-errorlogs
 }
 
 _pick() {
-  local p="$1" f d; shift
-  for f; do
-    d="$srcdir/$p/${f#$pkgdir/}"
-    mkdir -p "$(dirname "$d")"
-    mv "$f" "$d"
-    rmdir -p --ignore-fail-on-non-empty "$(dirname "$f")"
+  local \
+    _p="${1}" \
+    _f \
+    _d
+  shift
+  for _f; do
+    _d="${srcdir}/${_p}/${_f#$pkgdir/}"
+    mkdir \
+      -p \
+      "$(dirname \
+           "${_d}")"
+    mv \
+      "${_f}" \
+      "${_d}"
+    rmdir \
+      -p \
+      --ignore-fail-on-non-empty \
+      "$(dirname \
+           "${_f}")"
   done
 }
 
 package_lib32-gobject-introspection() {
+  local \
+    _f
   depends+=(
     "gobject-introspection>=${pkgver}"
     "${_ml}gobject-introspection-runtime=${pkgver}-${pkgrel}"
+    "${_ml}libgirepository=${pkgver}-${pkgrel}"
+    "${_ml}glib2"
+    "${_ml}${_libc}"
+    "${_ml}libffi"
+    "${_ml}${_py}>=${_pymajver}"
+    "${_py}-mako"
+    "${_py}-markdown"
+    "${_py}-setuptools"
   )
   export \
     CC="gcc -m32" \
     CXX="g++ -m32"
-  "/usr/bin/meson" \
+  meson \
     install \
       -C \
         build \
@@ -182,11 +279,17 @@ package_lib32-gobject-introspection() {
         "/usr/lib32/${_pkg}" \
       "usr/lib32/${_pkg}"
   _pick \
-    "runtime" \
-    "usr/lib32/lib"*
+    "libg" \
+    "usr/lib32/libgirepository-1.0.so"*
+  _pick \
+    "libg" \
+    "usr/lib32/pkgconfig/gobject-introspection"*"-1.0.pc"
+  _pick \
+    "libg" \
+    "usr/lib32/girepository-1.0/GIRepository-2.0.typelib"
   _pick \
     "runtime" \
-    "usr/lib32/girepository-"*
+    "usr/lib32/girepository-1.0"
   rm \
     -r \
     "usr/"{"include","share"}
@@ -200,12 +303,26 @@ package_lib32-gobject-introspection() {
 package_lib32-gobject-introspection-runtime() {
   pkgdesc+=" (runtime library)"
   depends=(
+    "${_ml}libgirepository=${pkgver}-${pkgrel}"
+  )
+  mv \
+    "runtime/"* \
+    "${pkgdir}"
+}
+
+package_lib32-libgirepository() {
+  pkgdesc+=" - runtime library"
+  depends=(
     "${_ml}glib2"
+    "${_ml}${_libc}"
+    "${_ml}libffi"
+    "libffi.so"
+    "libg"{"lib","object","module"}"-2.0.so"
   )
   provides=(
     "libgirepository-1.0.so"
   )
   mv \
-    "runtime/"* \
+    "libg/"* \
     "${pkgdir}"
 }
